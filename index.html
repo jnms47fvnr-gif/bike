@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>裏道マップ — 自転車ルート案内</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -64,11 +64,11 @@
   .rail{
     position:absolute;right:12px;z-index:900;
     bottom:300px;
-    display:flex;flex-direction:column;gap:8px;
+    display:flex;flex-direction:column;gap:7px;
     transition:bottom .28s cubic-bezier(.3,.8,.3,1);
   }
   .rail button{
-    width:46px;height:46px;border-radius:13px;cursor:pointer;
+    width:44px;height:44px;border-radius:13px;cursor:pointer;
     background:var(--panel);backdrop-filter:blur(10px);
     border:1px solid var(--line);color:var(--text);
     font-size:18px;line-height:1;display:grid;place-items:center;
@@ -77,6 +77,9 @@
   .rail button:hover{border-color:rgba(237,233,225,.35)}
   .rail button:active{transform:scale(.94)}
   .rail button.on{border-color:var(--amber);color:var(--amber);background:rgba(242,160,61,.14)}
+  .rail button .needle{display:block;transform-origin:50% 50%;transform:rotate(0deg)}
+  .rail button#btnNorth{transition:background .15s,border-color .15s}
+  .rail button#btnNorth.on{background:rgba(242,160,61,.18)}
 
   /* ---------- ボトムシート ---------- */
   .sheet{
@@ -252,6 +255,18 @@
     .metric .num.sm{font-size:17px}
     .seg-btn{font-size:11.5px;padding:9px 2px}
   }
+
+  /* ---------- パネルが消える問題への対策（スクロール・拡大の封じ込め） ---------- */
+  html,body{height:100%;overflow:hidden;overscroll-behavior:none;background:#12161A}
+  body{position:fixed;inset:0;width:100%;touch-action:manipulation}
+  #map{position:fixed;inset:0}
+  .hud-top{position:fixed}
+  .rail{position:fixed}
+  .sheet{
+    position:fixed;touch-action:pan-y;
+    background:linear-gradient(180deg,#1A1F24,#12161A 42%);
+    -webkit-backdrop-filter:none;backdrop-filter:none;
+  }
 </style>
 </head>
 <body>
@@ -265,6 +280,12 @@
 </div>
 
 <div class="rail">
+  <button id="btnNorth" title="北を上に戻す" aria-label="北を上に戻す">
+    <svg class="needle" viewBox="0 0 24 24" width="21" height="21" aria-hidden="true">
+      <path d="M12 2 L16.2 13 L12 11.2 L7.8 13 Z" fill="#F2A03D"></path>
+      <path d="M12 22 L7.8 11 L12 12.8 L16.2 11 Z" fill="#8A949C"></path>
+    </svg>
+  </button>
   <button id="btnZoomIn" title="拡大" aria-label="地図を拡大">＋</button>
   <button id="btnZoomOut" title="縮小" aria-label="地図を縮小">−</button>
   <button id="btnFollow" class="on" title="現在地に一瞬で戻る" aria-label="現在地に一瞬で戻る">◎</button>
@@ -316,7 +337,7 @@
     <button class="seg-btn" data-profile="trekking-nosteps">階段回避</button>
   </div>
 
-  <p class="hint" id="routeHint">地図をタップするか、上で地名を検索して目的地ピンを置き、「裏道ルートを引く」を押してください。ピンはドラッグで動かせます。</p>
+  <p class="hint" id="routeHint">地図をタップするか、上で地名を検索して目的地ピンを置き、「裏道ルートを引く」を押してください。ピンはドラッグで動かせます。地図は2本指でひねると回転します（右上の針で北に戻せます）。</p>
 
   <div class="actions">
     <button class="btn primary" id="btnRoute">裏道ルートを引く</button>
@@ -340,6 +361,7 @@
 <div class="toast" id="toast"></div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="https://unpkg.com/leaflet-rotate@0.2.8/dist/leaflet-rotate.js" integrity="sha384-MtIdllebpZyms2pw9K3YJl8BEqrKNQCdSFAySjeglab6z2PkeFdF4Lb9cDsnxQuG" crossorigin="anonymous"></script>
 <script>
 (function(){
   'use strict';
@@ -356,7 +378,11 @@
   var PROFILES     = { trekking:'裏道優先', safety:'安全優先', 'trekking-nosteps':'階段回避' };
 
   /* ===================== 地図 ===================== */
-  var map = L.map('map', { zoomControl:false, attributionControl:true })
+  // rotate / touchRotate = 2本指で地図を回転（leaflet-rotate）
+  var map = L.map('map', {
+               zoomControl:false, attributionControl:true,
+               rotate:true, touchRotate:true, rotateControl:false, compassBearing:false
+             })
              .setView([35.681236,139.767125], 15);
 
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -938,8 +964,69 @@
   $('#btnZoomIn').addEventListener('click', function(){ map.zoomIn(1); });
   $('#btnZoomOut').addEventListener('click', function(){ map.zoomOut(1); });
 
+  /* ---------- 北ボタン（地図の回転） ---------- */
+  // 針の向きは「地図が実際に何度回されたか」を地図のパン要素から読み取って合わせる。
+  // （プラグインの角度の向きに依存しないので、必ず北を正しく指す）
+  var northBtn = $('#btnNorth');
+  var needleEl = northBtn ? northBtn.querySelector('.needle') : null;
+  function paneAngle(){
+    if(!map.getPane) return null;
+    var pane = map.getPane('rotatePane') || map._rotatePane ||
+               document.querySelector('.leaflet-rotate-pane');
+    if(!pane) return null;
+    var cands = [];
+    if(pane.style && pane.style.transform) cands.push(pane.style.transform);
+    try{ var cs = getComputedStyle(pane).transform; if(cs && cs !== 'none') cands.push(cs); }catch(e){}
+    for(var i = 0; i < cands.length; i++){
+      var m = cands[i].match(/matrix\(([^)]+)\)/);
+      if(m){
+        var v = m[1].split(',').map(parseFloat);
+        if(v.length >= 4 && isFinite(v[0]) && isFinite(v[1]) && !(v[0] === 1 && v[1] === 0)){
+          return Math.atan2(v[1], v[0]) * 180 / Math.PI;   // CSSの回転角（時計回りが正）
+        }
+        continue;
+      }
+      var r = cands[i].match(/rotate(?:3d)?\(\s*(-?[\d.]+)deg/);
+      if(r) return parseFloat(r[1]);
+    }
+    return null;   // 判別できないときは null（呼び出し側で getBearing にフォールバック）
+  }
+
+  function updateCompass(){
+    if(!needleEl) return;
+    var a = paneAngle();
+    if(a === null){ // パン要素を読めないときは bearing から求める（北は時計回りが正）
+      a = (typeof map.getBearing === 'function') ? map.getBearing() : 0;
+    }
+    needleEl.style.transform = 'rotate(' + a.toFixed(1) + 'deg)';
+    var off = Math.abs(((a % 360) + 540) % 360 - 180) > 0.5;
+    northBtn.classList.toggle('on', off);
+  }
+  if(!northBtn || typeof map.setBearing !== 'function'){
+    if(northBtn) northBtn.hidden = true;      // 回転プラグインが読めなかったら隠す
+  }else{
+    updateCompass();
+    map.on('rotate', updateCompass);
+    northBtn.addEventListener('click', function(){
+      var b = (typeof map.getBearing === 'function') ? map.getBearing() : 0;
+      if(Math.abs(b) < 0.5){ toast('すでに北が上です'); return; }
+      map.setBearing(0, { animate: true });
+      updateCompass();
+      toast('北を上に戻しました');
+    });
+  }
+
   // 手で地図を動かしたら追従を解除（勝手に現在地へ戻らないように）
+  function blurInput(){
+    var ae = document.activeElement;
+    if(ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) ae.blur();
+  }
+  map.on('click', blurInput);
+
+  map.on('rotate', blurInput);
+
   map.on('dragstart zoomstart', function(){
+    blurInput();                                    // キーボードを閉じる（開いたままだとiOSでパネルが画面外へ押し出される）
     if(autoMove) return;
     if(follow){ follow = false; syncFollow(); }
   });
@@ -1010,6 +1097,38 @@
       navigator.wakeLock.request('screen').then(function(l){ wakeLock = l; }).catch(function(){});
     }
   });
+
+  /* ===================== 表示崩れの自動復帰 ===================== */
+  function resetScroll(){
+    if(window.scrollX || window.scrollY) window.scrollTo(0, 0);
+    if(document.documentElement.scrollTop) document.documentElement.scrollTop = 0;
+    if(document.body && document.body.scrollTop) document.body.scrollTop = 0;
+  }
+  window.addEventListener('scroll', resetScroll, { passive:true });
+
+  // iOSのページ拡大（ピンチ／ダブルタップ）を禁止する
+  ['gesturestart','gesturechange','gestureend'].forEach(function(t){
+    document.addEventListener(t, function(e){ e.preventDefault(); });
+  });
+  document.addEventListener('touchmove', function(e){
+    if(e.scale && e.scale !== 1) e.preventDefault();
+  }, { passive:false });
+
+  var relayoutT = null;
+  function relayout(){
+    clearTimeout(relayoutT);
+    relayoutT = setTimeout(function(){
+      resetScroll();
+      try{ map.invalidateSize({ pan:false }); }catch(e){}
+      layoutRail();
+    }, 120);
+  }
+  if(window.visualViewport){
+    window.visualViewport.addEventListener('resize', relayout);
+    window.visualViewport.addEventListener('scroll', relayout);
+  }
+  window.addEventListener('pageshow', relayout);
+  document.addEventListener('focusout', relayout);
 
   /* ===================== 起動 ===================== */
   if(!window.isSecureContext){
