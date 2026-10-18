@@ -992,12 +992,24 @@
     return null;   // 判別できないときは null（呼び出し側で getBearing にフォールバック）
   }
 
+  // 地図投影から「画面上で北がどちらを向いているか」を直接測る（符号の取り違えが起きない）
+  function northAngleOf(){
+    if(!map.latLngToContainerPoint || !map.getCenter) return null;
+    try{
+      var c = map.getCenter();
+      var p0 = map.latLngToContainerPoint(c);
+      var p1 = map.latLngToContainerPoint(L.latLng(c.lat + 0.02, c.lng));
+      var dx = p1.x - p0.x, dy = p1.y - p0.y;
+      if(!isFinite(dx) || !isFinite(dy) || (Math.abs(dx) + Math.abs(dy)) < 1e-6) return null;
+      return Math.atan2(dx, -dy) * 180 / Math.PI;   // 画面の真上から時計回りが正
+    }catch(e){ return null; }
+  }
+
   function updateCompass(){
     if(!needleEl) return;
-    var a = paneAngle();
-    if(a === null){ // パン要素を読めないときは bearing から求める（北は時計回りが正）
-      a = (typeof map.getBearing === 'function') ? map.getBearing() : 0;
-    }
+    var a = northAngleOf();
+    if(a === null) a = paneAngle();                 // 第1予備
+    if(a === null) a = (typeof map.getBearing === 'function') ? map.getBearing() : 0;  // 第2予備
     needleEl.style.transform = 'rotate(' + a.toFixed(1) + 'deg)';
     var off = Math.abs(((a % 360) + 540) % 360 - 180) > 0.5;
     northBtn.classList.toggle('on', off);
